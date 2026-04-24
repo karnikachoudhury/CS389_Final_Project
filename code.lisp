@@ -272,4 +272,14 @@
                         (lookup-path-tree (append p (list name))
                                           (cadr hfs)))
                        (caddr hfs))))))
+(defthm insert-path-preserves-or-updates-tree
+  (implies (and (hfs-p hfs)
+                (pathp p)
+                (symbolp name)
+                (nodep newnode))
+           (or (equal (cadr (insert-path p name newnode newinode hfs))
+                      (cadr hfs))
+               (equal (cadr (insert-path p name newnode newinode hfs))
+                      (insert-path-tree p name newnode (cadr hfs))))))
+
 
