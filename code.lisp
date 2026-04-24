@@ -281,5 +281,12 @@
                       (cadr hfs))
                (equal (cadr (insert-path p name newnode newinode hfs))
                       (insert-path-tree p name newnode (cadr hfs))))))
+(defthm delete-path-updates-tree
+  (implies (and (hfs-p hfs)
+                (pathp p)
+                (symbolp name))
+           (equal (cadr (delete-path p name hfs))
+                  (delete-path-tree p name (cadr hfs)))))
+
 
 

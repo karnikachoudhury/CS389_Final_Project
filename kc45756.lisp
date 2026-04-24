@@ -99,3 +99,318 @@ and provides a foundation for extending the model to support more advanced featu
 links, or richer metadata.
 
 ; End of Report
+
+; checks whether p is a valid path
+(defun pathp (p)
+  (if (endp p)
+      t
+    (and (symbolp (car p))
+         (pathp (cdr p)))))
+
+; only natural numbers are valid inode numbers
+(defun inop (x)
+  (natp x))
+
+; checks whether x is file node (:file inode-number)
+(defun filep (x)
+  (and (consp x)
+       (equal (car x) :file)
+       (consp (cdr x))
+       (null (cddr x))
+       (inop (cadr x))))
+
+(mutual-recursion
+
+; checks whether x is a directory node (:dir inode-number entries)
+ (defun dirp (x)
+   (declare (xargs :measure (acl2-count x)))
+   (and (consp x)
+        (equal (car x) :dir)
+        (consp (cdr x))
+        (consp (cddr x))
+        (null (cdddr x))
+        (inop (cadr x))
+        (entriesp (caddr x))))
+
+; checks whether directory entry maps a symbol name to either a file node or directory node
+ (defun entryp (x)
+   (declare (xargs :measure (acl2-count x)))
+   (and (consp x)
+        (symbolp (car x))
+        (or (filep (cdr x))
+            (dirp (cdr x)))))
+
+; recursively checks if all entries meet entryp properties
+ (defun entriesp (entries)
+   (declare (xargs :measure (acl2-count entries)))
+   (if (endp entries)
+       t
+     (and (entryp (car entries))
+          (entriesp (cdr entries))))))
+
+; check whether node is file or directory node
+(defun nodep (x)
+  (or (filep x)
+      (dirp x)))
+
+; root of tree must be directory
+(defun valid-tree (fs)
+  (dirp fs))
+
+;
+; inode functions
+;
+; checks if inode has form (:inode inode-number type owner size)
+(defun inodep (x)
+  (and (consp x)
+       (equal (car x) :inode)
+       (consp (cdr x))
+       (consp (cddr x))
+       (consp (cdddr x))
+       (consp (cddddr x))
+       (null (cdr (cddddr x)))
+       (inop (cadr x))
+       (or (equal (caddr x) :file)
+           (equal (caddr x) :dir))
+       (symbolp (cadddr x))
+       (natp (car (cddddr x)))))
+
+; checks whether each inode table entry maps inode number to inode metadata
+(defun inode-entry-p (x)
+  (and (consp x)
+       (inop (car x))
+       (inodep (cdr x))))
+
+; recursively checks if each inode meets inode-entry-p specifications
+(defun inode-table-p (tbl)
+  (if (endp tbl)
+      t
+    (and (inode-entry-p (car tbl))
+         (inode-table-p (cdr tbl)))))
+
+; checks whether full file system is valid (:fs directory-tree inode-table)
+(defun hfs-p (x)
+  (and (consp x)
+       (equal (car x) :fs)
+       (consp (cdr x))
+       (consp (cddr x))
+       (null (cdddr x))
+       (valid-tree (cadr x))
+       (inode-table-p (caddr x))))
+
+; looks up name in directory entries, returning node associated with name or nil
+(defun lookup-name (name entries)
+  (if (endp entries)
+      nil
+    (if (equal name (caar entries))
+        (cdar entries)
+      (lookup-name name (cdr entries)))))
+
+; adds or replaces a name-node pair in a directory's entries
+(defun put-name (name node entries)
+  (if (endp entries)
+      (list (cons name node))
+    (if (equal name (caar entries))
+        (cons (cons name node)
+              (cdr entries))
+      (cons (car entries)
+            (put-name name node (cdr entries))))))
+
+; removes a name-node pair from a directory's entries
+(defun remove-name (name entries)
+  (if (endp entries)
+      nil
+    (if (equal name (caar entries))
+        (cdr entries)
+      (cons (car entries)
+            (remove-name name (cdr entries))))))
+
+; extracts the inode number from a file or directory node
+(defun node-ino (node)
+  (if (filep node)
+      (cadr node)
+    (if (dirp node)
+        (cadr node)
+      nil)))
+
+; looks up an inode number in the inode table
+(defun lookup-inode (ino tbl)
+  (if (endp tbl)
+      nil
+    (if (equal ino (caar tbl))
+        (cdar tbl)
+      (lookup-inode ino (cdr tbl)))))
+
+; adds or replaces an inode record in the inode table
+(defun put-inode (ino inode tbl)
+  (if (endp tbl)
+      (list (cons ino inode))
+    (if (equal ino (caar tbl))
+        (cons (cons ino inode)
+              (cdr tbl))
+      (cons (car tbl)
+            (put-inode ino inode (cdr tbl))))))
+
+; removes an inode record from the inode table
+(defun remove-inode (ino tbl)
+  (if (endp tbl)
+      nil
+    (if (equal ino (caar tbl))
+        (cdr tbl)
+      (cons (car tbl)
+            (remove-inode ino (cdr tbl))))))
+
+; removes a list of inode numbers from the inode table
+(defun remove-inode-list (inos tbl)
+  (if (endp inos)
+      tbl
+    (remove-inode-list (cdr inos)
+                       (remove-inode (car inos) tbl))))
+
+; recursively follows a path through the directory tree
+(defun lookup-path-tree (p fs)
+  (if (endp p)
+      fs
+    (if (dirp fs)
+        (lookup-path-tree (cdr p)
+                          (lookup-name (car p) (caddr fs)))
+      nil)))
+
+; looks up a path in the full filesystem state
+(defun lookup-path (p hfs)
+  (if (hfs-p hfs)
+      (lookup-path-tree p (cadr hfs))
+    nil))
+
+; looks up the inode metadata associated with a path
+(defun lookup-path-inode (p hfs)
+  (let ((node (lookup-path p hfs)))
+    (if (and (hfs-p hfs)
+             (nodep node))
+        (lookup-inode (node-ino node)
+                      (caddr hfs))
+      nil)))
+
+; inserts a new node into the directory tree
+(defun insert-path-tree (p name newnode fs)
+  (if (not (dirp fs))
+      fs
+    (if (endp p)
+        (list :dir
+              (cadr fs)
+              (put-name name newnode (caddr fs)))
+      (let ((child (lookup-name (car p) (caddr fs))))
+        (if (dirp child)
+            (list :dir
+                  (cadr fs)
+                  (put-name (car p)
+                            (insert-path-tree (cdr p) name newnode child)
+                            (caddr fs)))
+          fs)))))
+
+; deletes a node from the directory tree
+(defun delete-path-tree (p name fs)
+  (if (not (dirp fs))
+      fs
+    (if (endp p)
+        (list :dir
+              (cadr fs)
+              (remove-name name (caddr fs)))
+      (let ((child (lookup-name (car p) (caddr fs))))
+        (if (dirp child)
+            (list :dir
+                  (cadr fs)
+                  (put-name (car p)
+                            (delete-path-tree (cdr p) name child)
+                            (caddr fs)))
+          fs)))))
+
+
+; collects all inode numbers contained in a node
+(mutual-recursion
+
+ (defun collect-inos-node (node)
+   (declare (xargs :measure (acl2-count node)))
+   (if (filep node)
+       (list (cadr node))
+     (if (dirp node)
+         (cons (cadr node)
+               (collect-inos-entries (caddr node)))
+       nil)))
+
+; collects all inode numbers from a list of directory entries
+ (defun collect-inos-entries (entries)
+   (declare (xargs :measure (acl2-count entries)))
+   (if (endp entries)
+       nil
+     (append (collect-inos-node (cdar entries))
+             (collect-inos-entries (cdr entries))))))
+
+
+; inserts a file or directory into the full filesystem
+(defun insert-path (p name newnode newinode hfs)
+  (if (not (hfs-p hfs))
+      hfs
+    (let ((newtree (insert-path-tree p name newnode (cadr hfs))))
+      (if (equal newtree (cadr hfs))
+          hfs
+        (list :fs
+              newtree
+              (put-inode (node-ino newnode)
+                         newinode
+                         (caddr hfs)))))))
+
+; deletes a file or directory from the full filesystem
+(defun delete-path (p name hfs)
+  (if (not (hfs-p hfs))
+      hfs
+    (let* ((victim (lookup-path-tree (append p (list name)) (cadr hfs)))
+           (newtree (delete-path-tree p name (cadr hfs)))
+           (inos-to-remove (collect-inos-node victim))
+           (newtbl (remove-inode-list inos-to-remove (caddr hfs))))
+      (list :fs newtree newtbl))))
+
+
+; proves that insert path preserves structural invariant of inode table
+(defthm insert-path-preserves-or-updates-inode-table
+  (implies (and (hfs-p hfs)
+                (pathp p)
+                (symbolp name)
+                (nodep newnode)
+                (inodep newinode))
+           (or (equal (caddr (insert-path p name newnode newinode hfs))
+                      (caddr hfs))
+               (equal (caddr (insert-path p name newnode newinode hfs))
+                      (put-inode (node-ino newnode)
+                                 newinode
+                                 (caddr hfs))))))
+; proves that delete path preserves structural invariant of inode table                                
+(defthm delete-path-updates-inode-table
+  (implies (and (hfs-p hfs)
+                (pathp p)
+                (symbolp name))
+           (or (equal (caddr (delete-path p name hfs))
+                      (caddr hfs))
+               (equal (caddr (delete-path p name hfs))
+                      (remove-inode-list
+                       (collect-inos-node
+                        (lookup-path-tree (append p (list name))
+                                          (cadr hfs)))
+                       (caddr hfs))))))
+; proves that insert path preserves structural invariant of directory tree                   
+(defthm insert-path-preserves-or-updates-tree
+  (implies (and (hfs-p hfs)
+                (pathp p)
+                (symbolp name)
+                (nodep newnode))
+           (or (equal (cadr (insert-path p name newnode newinode hfs))
+                      (cadr hfs))
+               (equal (cadr (insert-path p name newnode newinode hfs))
+                      (insert-path-tree p name newnode (cadr hfs))))))
+; proves that delete path preserves structural invariant of directory tree                  
+(defthm delete-path-updates-tree
+  (implies (and (hfs-p hfs)
+                (pathp p)
+                (symbolp name))
+           (equal (cadr (delete-path p name hfs))
+                  (delete-path-tree p name (cadr hfs)))))
